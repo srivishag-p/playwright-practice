@@ -1,0 +1,17 @@
+[
+  {
+    "username": "admin@osyte.com",
+    "password": "Admin@123",
+    "role": "admin"
+  },
+  {
+    "username": "manager@osyte.com",
+    "password": "Mgr@123",
+    "role": "manager"
+  },
+  {
+    "username": "viewer@osyte.com",
+    "password": "View@123",
+    "role": "viewer"
+  }
+]

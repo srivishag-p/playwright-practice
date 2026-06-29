@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\Srivishag\\\\Downloads\\\\total mobile app\" -Recurse -Force)",
+      "Bash(Select-Object FullName, PSIsContainer)",
+      "Bash(Sort-Object FullName)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(mkdir \"d:\\\\Playwright Practice\\\\mcp-command-executor\")",
+      "Bash(python -c \"import secrets; print\\(secrets.token_hex\\(32\\)\\)\")",
+      "Bash(xargs grep -l \"module.exports.*TestData\\\\|module.exports.*CommonUtils\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"d:\\\\Playwright Practice\\\\lib\\\\components\\\\postman\\\\collections\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"d:\\\\Playwright Practice\\\\lib\\\\db\\\\validators\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"d:\\\\Playwright Practice\\\\lib\\\\steps\\\\postman\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"d:\\\\Playwright Practice\\\\environments\\\\dev\\\\general\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"d:\\\\Playwright Practice\\\\features\\\\Regression\\\\API\\\\CartManagement\")",
+      "PowerShell(cd \"d:\\\\Playwright Practice\" && npx cucumber-js --config lib/configs/cucumber.api.yml --dry-run 2>&1 | Where-Object { $_ -notmatch \"DeprecationWarning|publishQuiet|trace-deprecation|DEP0176|not been tested\" })",
+      "PowerShell(cd \"d:\\\\Playwright Practice\" && npx cucumber-js --config lib/configs/cucumber.api.yml --dry-run; Write-Host \"Exit: $LASTEXITCODE\")"
+    ],
+    "additionalDirectories": [
+      "d:\\Playwright Practice"
+    ]
+  }
+}

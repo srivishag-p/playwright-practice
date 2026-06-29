@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "outDir": "./dist",
+    "rootDir": "./",
+    "baseUrl": "./",
+    "paths": {
+      "@pages/*":        ["lib/pages/*"],
+      "@components/*":   ["lib/components/*"],
+      "@api/*":        ["lib/api/*"],
+      "@db/*":         ["lib/db/*"],
+      "@utils/*":      ["lib/utils/*"],
+      "@helpers/*":    ["lib/helpers/*"],
+      "@core/*":       ["lib/helpers/*"],
+      "@reporters/*":  ["lib/helpers/*"],
+      "@steps/*":      ["lib/steps/*"],
+      "@data/*":       ["lib/data/*"],
+      "@test-data/*":  ["test-data/*"]
+    },
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "sourceMap": true
+  },
+  "include": ["lib/**/*", "features/**/*"],
+  "exclude": ["node_modules", "dist", "allure-results", "allure-report"]
+}

@@ -1,0 +1,19 @@
+default:
+  paths:
+    - features/Regression/UI/**/*.feature
+  require:
+    - lib/helpers/support/world.ts
+    - lib/helpers/support/parameter-types.ts
+    - lib/helpers/hooks/ui.hooks.ts
+    - lib/steps/common/**/*.ts
+    - lib/steps/web/**/*.ts
+  requireModule:
+    - ts-node/register
+    - tsconfig-paths/register
+  format:
+    - progress-bar
+    - allure-cucumberjs/reporter
+  formatOptions:
+    resultsDir: allure-results/bdd
+  tags: "not @skip and not @api-only and not @db-only"
+  publishQuiet: true

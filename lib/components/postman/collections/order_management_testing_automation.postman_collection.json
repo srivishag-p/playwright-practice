@@ -1,0 +1,245 @@
+{
+  "info": {
+    "_postman_id": "894e8582-c10d-4894-b2d1-bcf63afd5dc5",
+    "name": "Order Management - Testing Automation",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "29751274"
+  },
+  "item": [
+    {
+      "name": "Cart",
+      "item": [
+        {
+          "name": "Get Cart",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has items array', () => pm.expect(pm.response.json().items).to.be.an('array'));",
+                  "pm.test('Has subtotal', () => pm.expect(pm.response.json().subtotal).to.be.a('number'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "{{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/ck-order/v1/cart/{{customerId}}/kitchen/{{kitchenId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["ck-order", "v1", "cart", "{{customerId}}", "kitchen", "{{kitchenId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Add Item Biriyani",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Item in cart', () => pm.expect(pm.response.json().items.length).to.be.above(0));",
+                  "pm.test('Subtotal > 0', () => pm.expect(pm.response.json().subtotal).to.be.above(0));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "{{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"menuItemId\": 1,\n  \"name\": \"Biriyani\",\n  \"quantity\": 2,\n  \"unitPrice\": 320.50,\n  \"customizationNotes\": \"Extra spicy\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ck-order/v1/cart/{{customerId}}/kitchen/{{kitchenId}}/items",
+              "host": ["{{baseUrl}}"],
+              "path": ["ck-order", "v1", "cart", "{{customerId}}", "kitchen", "{{kitchenId}}", "items"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Add Item Chicken Roll",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "{{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"menuItemId\": 8,\n  \"name\": \"Chicken Roll\",\n  \"quantity\": 1,\n  \"unitPrice\": 222.00\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ck-order/v1/cart/{{customerId}}/kitchen/{{kitchenId}}/items",
+              "host": ["{{baseUrl}}"],
+              "path": ["ck-order", "v1", "cart", "{{customerId}}", "kitchen", "{{kitchenId}}", "items"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Add Biriyani Again",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "var biriyani = pm.response.json().items.find(i => i.name === 'Biriyani');",
+                  "pm.test('Biriyani exists in cart', () => pm.expect(biriyani).to.not.be.undefined);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "{{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"menuItemId\": 1,\n  \"name\": \"Biriyani\",\n  \"quantity\": 1,\n  \"unitPrice\": 320.50\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ck-order/v1/cart/{{customerId}}/kitchen/{{kitchenId}}/items",
+              "host": ["{{baseUrl}}"],
+              "path": ["ck-order", "v1", "cart", "{{customerId}}", "kitchen", "{{kitchenId}}", "items"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Item Quantity Biriyani",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "var item = pm.response.json().items.find(i => i.name === 'Biriyani');",
+                  "pm.test('Biriyani exists', () => pm.expect(item).to.not.be.undefined);",
+                  "pm.test('Qty is 4', () => pm.expect(item.quantity).to.eql(4));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "{{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 4\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ck-order/v1/cart/{{customerId}}/kitchen/{{kitchenId}}/items/{{biriyaniItemId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["ck-order", "v1", "cart", "{{customerId}}", "kitchen", "{{kitchenId}}", "items", "{{biriyaniItemId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Remove Item Chicken Roll",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "var item = pm.response.json().items.find(i => i.name === 'Chicken Roll');",
+                  "pm.test('Chicken Roll removed', () => pm.expect(item).to.be.undefined);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "{{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/ck-order/v1/cart/{{customerId}}/kitchen/{{kitchenId}}/items/{{chickenRollItemId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["ck-order", "v1", "cart", "{{customerId}}", "kitchen", "{{kitchenId}}", "items", "{{chickenRollItemId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Checkout DELIVERY",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "var order = pm.response.json();",
+                  "pm.collectionVariables.set('orderId', order.id);",
+                  "pm.test('Order is PENDING', () => pm.expect(order.status).to.eql('PENDING'));",
+                  "pm.test('orderType is DELIVERY', () => pm.expect(order.orderType).to.eql('DELIVERY'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "{{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderType\": \"DELIVERY\",\n  \"specialInstructions\": \"Call before delivery\",\n  \"customerAddressId\": \"{{customerAddressId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/ck-order/v1/cart/{{customerId}}/kitchen/{{kitchenId}}/checkout",
+              "host": ["{{baseUrl}}"],
+              "path": ["ck-order", "v1", "cart", "{{customerId}}", "kitchen", "{{kitchenId}}", "checkout"]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl",           "value": "" },
+    { "key": "customerId",        "value": "" },
+    { "key": "kitchenId",         "value": "" },
+    { "key": "orderId",           "value": "" },
+    { "key": "biriyaniItemId",    "value": "" },
+    { "key": "chickenRollItemId", "value": "" }
+  ]
+}

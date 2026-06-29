@@ -1,0 +1,7 @@
+username,password,expected_result
+admin@osyte.com,Admin@123,success
+manager@osyte.com,Mgr@123,success
+viewer@osyte.com,View@123,success
+admin@osyte.com,wrongpass,error
+,Admin@123,error
+admin@osyte.com,,error
