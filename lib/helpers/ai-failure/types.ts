@@ -163,6 +163,13 @@ export interface DomIntelligenceResult {
   // Tier 7 — Compressed DOM tree rooted at nearest meaningful ancestor
   domTree?: string;
 
+  /**
+   * Accessibility tree (Playwright ariaSnapshot YAML) — the browser-computed
+   * role + accessible name for each node. This is the authoritative source the
+   * SimilarityEngine uses to find role/name candidates, surfaced for the human.
+   */
+  a11yTree?: string;
+
   /** Populated when extraction failed (e.g. element not found). */
   error?: string;
 }
@@ -291,10 +298,26 @@ export interface AiAnalysis {
   debuggingChecklist?: string[];
   /** Why each ranked confidence score is high or low. */
   scoreExplanations?: Record<string, string>;
+  /**
+   * UI-change analysis produced from the InteractionComparison (old info vs new
+   * info). Present only when a prior successful snapshot was found and compared
+   * against the current DOM.
+   */
+  changeAnalysis?: ChangeAnalysis;
   /** Raw model text when structured parsing failed. */
   raw?: string;
   /** Populated when the AI call was skipped or errored. */
   error?: string;
+}
+
+/** AI explanation of a UI change that broke a previously-working locator. */
+export interface ChangeAnalysis {
+  /** What specifically changed, citing detectedChanges values. */
+  whatChanged?: string;
+  /** Why the change caused this particular locator to fail. */
+  whyCausedFailure?: string;
+  /** The exact updated locator (matches betterLocator). */
+  fix?: string;
 }
 
 // ── 6. Selector diff (pre-computed before the AI call) ───────────────────────
@@ -403,5 +426,151 @@ export interface FailureIntelligencePackage {
    * a verified replacement exists. Shown as a diff — never auto-applied.
    */
   patchSuggestion?: PatchSuggestion;
+  /**
+   * "Old info vs new info" comparison: the last successful interaction snapshot
+   * for this locator vs the current DOM. Populated only when a prior snapshot
+   * exists in the database and could be loaded. Drives ai.changeAnalysis.
+   */
+  interactionComparison?: InteractionComparison;
   ai: AiAnalysis;
+}
+
+// ── 8. Interaction snapshot & UI change analysis ─────────────────────────────
+
+/** Accessibility properties captured for a successfully-interacted element. */
+export interface FingerprintA11y {
+  role?: string;
+  accessibleName?: string;
+  description?: string;
+  checked?: boolean;
+  disabled?: boolean;
+  expanded?: boolean;
+  selected?: boolean;
+  pressed?: boolean;
+  required?: boolean;
+  readonly?: boolean;
+}
+
+/** DOM properties captured for the element. */
+export interface FingerprintDom {
+  tag: string;
+  id?: string;
+  classes?: string[];
+  attributes?: Record<string, string>;
+  text?: string;
+  placeholder?: string;
+  title?: string;
+  ariaAttributes?: Record<string, string>;
+  inputType?: string;
+  name?: string;
+  value?: string;
+}
+
+/** Position + structural placement of the element. */
+export interface FingerprintPosition {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  domDepth: number;
+  siblingIndex: number;
+}
+
+/** A single ancestor descriptor in the parent chain (root-most last). */
+export interface FingerprintParent {
+  tag: string;
+  role?: string;
+  accessibleName?: string;
+}
+
+/** Surrounding semantic context, for disambiguation. */
+export interface FingerprintNeighbourhood {
+  previousSibling?: string;
+  nextSibling?: string;
+  nearbyLabels: string[];
+  nearbyHeadings: string[];
+  nearbyButtons: string[];
+  nearbyTextboxes: string[];
+}
+
+/**
+ * Complete identity of an element at interaction time. Stored as JSONB in
+ * interaction_snapshots and used by the InteractionDiff engine to detect what
+ * changed when the same locator later fails.
+ */
+export interface InteractionFingerprint {
+  a11y: FingerprintA11y;
+  dom: FingerprintDom;
+  position: FingerprintPosition;
+  /** Parent chain, nearest parent first (up to ~2 levels). */
+  parents: FingerprintParent[];
+  neighbourhood: FingerprintNeighbourhood;
+  /** Semantic path using role + accessible name, e.g. "main → form(Login) → button(Login)". */
+  semanticPath: string;
+}
+
+/** A persisted successful interaction, retrieved when its locator later fails. */
+export interface InteractionSnapshot {
+  scenarioName: string;
+  stepText: string;
+  url: string;
+  locatorString: string;
+  actionType: string;
+  locatorStrategy?: string;
+  fingerprint: InteractionFingerprint;
+  screenshotBase64?: string;
+  capturedAt: string;
+}
+
+/** A single detected difference between the previous snapshot and the current element. */
+export interface DiffResult {
+  /** e.g. "accessibleName", "role", "placeholder", "parentName", "position", "tag". */
+  field: string;
+  from: string;
+  to: string;
+  /** Magnitude 0–1 (1 = completely changed) — used to rank which change mattered most. */
+  severity: number;
+}
+
+/** Compact fingerprint summary sent to the AI and rendered in the report. */
+export interface FingerprintSummary {
+  role?: string;
+  accessibleName?: string;
+  tag: string;
+  text?: string;
+  placeholder?: string;
+  parentRole?: string;
+  parentName?: string;
+  semanticPath: string;
+}
+
+/**
+ * The "old info vs new info" bundle. Built on failure by loading the last
+ * successful snapshot and comparing it against the best current candidate.
+ */
+export interface InteractionComparison {
+  /** 1 = exact match, up to 5 = locator-only fallback. */
+  retrievalLevel: number;
+  /** ISO timestamp of the baseline snapshot. */
+  baselineDate?: string;
+  /** Previous successful element. */
+  previous?: FingerprintSummary;
+  /** Current best candidate (or resolved element). */
+  current?: FingerprintSummary;
+  /** Ready-to-paste locator for the current best candidate. */
+  suggestedLocator?: string;
+  /** Structured list of measured differences (highest severity first). */
+  detectedChanges: DiffResult[];
+  /** Previous element screenshot (from the snapshot), base64 PNG. */
+  previousScreenshotBase64?: string;
+  /** Current element screenshot, base64 PNG. */
+  currentScreenshotBase64?: string;
+  /** Human note, e.g. "No baseline available" or "partial match (level 3)". */
+  note?: string;
+  /**
+   * True when a DB baseline exists for this locator but the element cannot be
+   * found anywhere in the current DOM. Indicates a section/element was removed
+   * from the application rather than just renamed or moved.
+   */
+  elementGone?: boolean;
 }

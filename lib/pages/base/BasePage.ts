@@ -1,6 +1,6 @@
 import { Page, Locator, expect } from '@playwright/test';
 import { logger } from '@utils/logger';
-import { FailureContext, SelfHealer } from '@helpers/ai-failure';
+import { FailureContext, SelfHealer, InteractionSnapshotCapture } from '@helpers/ai-failure';
 import type { ActionType } from '@helpers/ai-failure';
 
 export abstract class BasePage {
@@ -59,6 +59,7 @@ export abstract class BasePage {
   ): Promise<void> {
     try {
       await run(locator);
+      await this.captureSnapshot(type, locator);
     } catch (err) {
       const healed = await SelfHealer.heal(this.page, locator, description);
       if (!healed) throw err;
@@ -69,7 +70,23 @@ export abstract class BasePage {
       // Re-track so a later failure reflects the locator that actually ran.
       this.track(type, `${description} (self-healed → ${healed.suggested})`, healed.locator);
       await run(healed.locator);
+      await this.captureSnapshot(type, healed.locator);
     }
+  }
+
+  /**
+   * Record an Interaction Snapshot for a locator that just acted successfully.
+   * Drives the "old info vs new info" UI-change analysis when this locator later
+   * fails. No-op (and zero browser work) when the interaction store is disabled
+   * or unavailable; never throws into the action path.
+   */
+  private async captureSnapshot(type: ActionType, locator: Locator): Promise<void> {
+    const ctx = FailureContext.for(this.page);
+    await InteractionSnapshotCapture.capture(this.page, locator, {
+      scenarioName: ctx.scenarioName || 'unknown scenario',
+      stepText: ctx.currentStepText || '',
+      actionType: type,
+    });
   }
 
   protected async click(locator: Locator, description?: string): Promise<void> {

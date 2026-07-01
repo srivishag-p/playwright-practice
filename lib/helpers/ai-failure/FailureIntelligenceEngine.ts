@@ -23,8 +23,24 @@ import { GeminiClient } from './GeminiClient';
 import { ReportRenderer } from './ReportRenderer';
 import { AutoPatch } from './AutoPatch';
 import { locatorFromString } from './locatorFromString';
+import { AiDbClient } from './db/AiDbClient';
+import { InteractionSnapshotRepo } from './InteractionSnapshotRepo';
+import { InteractionSnapshotCapture } from './InteractionSnapshotCapture';
+import { InteractionDiff } from './InteractionDiff';
+import { getEnv, getEnvNumber } from '@utils/env';
 import { logger } from '@utils/logger';
-import type { FailedAction, FailureIntelligencePackage, LocatorValidation, SelectorDiff, SimilarityCandidate } from './types';
+import { stringSimilarity } from './utils';
+import type {
+  DomIntelligenceResult,
+  FailedAction,
+  FailureIntelligencePackage,
+  InteractionComparison,
+  InteractionFingerprint,
+  LocatorValidation,
+  SelectorDiff,
+  SimilarityCandidate,
+  SupportingEvidence,
+} from './types';
 
 /** Minimal surface the engine needs from the Cucumber World. */
 export interface FailureWorldLike {
@@ -71,20 +87,25 @@ export class FailureIntelligenceEngine {
       EvidenceCollector.collect(world.page, errorMessage, failingLocator),
     ]);
 
-    // Run similarity search only when the primary locator failed to resolve.
-    const needsSimilarity = dom.matchCount === 0 || !dom.resolved;
+    // Run similarity search when the primary locator failed to resolve (0 matches)
+    // OR resolved to more than one element. The latter is the "clicked somewhere
+    // else" case: an ambiguous locator silently acts on the wrong node, so we
+    // still want ranked candidates for the right one.
+    const needsSimilarity = dom.matchCount === 0 || dom.matchCount > 1 || !dom.resolved;
     logger.debug(
       `[FIE] dom.matchCount=${dom.matchCount} dom.resolved=${dom.resolved} → needsSimilarity=${needsSimilarity} selector=${JSON.stringify(failedAction.selector)}`
     );
-    const similarityCandidates = needsSimilarity
+    // Use `let` — may be cleared later when DB baseline shows the element was removed.
+    let similarityCandidates = needsSimilarity
       ? await SimilarityEngine.findCandidates(world.page, failedAction)
       : [];
 
-    const rankedRootCauses = RuleEngine.analyze({ failedAction, errorMessage, dom, evidence });
+    const rankedRootCauses = RuleEngine.analyze({ failedAction, errorMessage, dom, evidence, similarityCandidates });
 
     // Build the selector diff before calling Gemini so the LLM receives a clean
     // "expected vs actual DOM" summary rather than raw HTML to reason over.
-    const selectorDiff = FailureIntelligenceEngine.buildSelectorDiff(
+    // Use `let` — cleared later when DB shows the element was removed.
+    let selectorDiff = FailureIntelligenceEngine.buildSelectorDiff(
       failedAction.selector,
       similarityCandidates,
     );
@@ -93,7 +114,7 @@ export class FailureIntelligenceEngine {
     // best from real evidence (not just a fuzzy score). Each becomes a scored +
     // validated option; the headline is the top verified one (AI may re-pick).
     if (selectorDiff && similarityCandidates.length > 0) {
-      const top = similarityCandidates.slice(0, 5);
+      const top = similarityCandidates.slice(0, getEnvNumber('AI_MAX_CANDIDATES', 5));
       const candidates: import('./types').CandidateValidation[] = [];
       for (const c of top) {
         const v = await FailureIntelligenceEngine.validateLocator(world.page, c.suggestedLocator);
@@ -130,6 +151,34 @@ export class FailureIntelligenceEngine {
       }
     }
 
+    // ── Old info vs new info (DB-first) ─────────────────────────────────────
+    // Load the last successful snapshot for this locator and diff it against the
+    // current DOM. Returns undefined when no baseline exists or the store is off.
+    const comparison = await FailureIntelligenceEngine.buildInteractionComparison(
+      world,
+      failedAction,
+      dom,
+      selectorDiff,
+    );
+    const interactionComparison = comparison?.comparison;
+
+    // DB-first priority: when the database has a baseline for this locator but the
+    // element is completely absent from the current DOM, the section/element was
+    // removed from the application — not just renamed. Suppress similarity
+    // candidates and the selectorDiff so the report and AI don't suggest a wrong
+    // replacement. The Interaction Comparison section (with the "element removed"
+    // banner) becomes the primary output in this case.
+    if (interactionComparison?.elementGone) {
+      logger.info(`[FIE] element gone (DB baseline exists, no matching element in current DOM) — suppressing similarity suggestions`);
+      similarityCandidates = [];
+      selectorDiff = undefined;
+      // The annotated screenshot was taken of the wrong element (highest-score
+      // candidate from a different section). Clear it so it doesn't appear in the
+      // report alongside an "element removed" banner.
+      evidence.annotatedScreenshotBase64 = undefined;
+    }
+
+    const aiStart = Date.now();
     const ai = await GeminiClient.analyze({
       scenarioName: world.scenarioName,
       failedAction,
@@ -139,7 +188,9 @@ export class FailureIntelligenceEngine {
       similarityCandidates,
       rankedRootCauses,
       selectorDiff,
+      interactionComparison,
     });
+    const aiLatencyMs = Date.now() - aiStart;
 
     // If the AI picked a different (verified) candidate as the best locator,
     // promote it to the headline so the report and patch reflect the AI's choice.
@@ -157,7 +208,171 @@ export class FailureIntelligenceEngine {
       selectorDiff?.preComputedLocator,
     );
 
-    return { scenarioName: world.scenarioName, failedAction, errorMessage, dom, evidence, similarityCandidates, rankedRootCauses, selectorDiff, patchSuggestion, ai };
+    // Persist the failure to the interaction store (fire-and-forget, no-op when
+    // the store is unavailable) so the latest failure state, candidates, and AI
+    // analysis are queryable. Never blocks teardown.
+    FailureIntelligenceEngine.persistFailure({
+      world,
+      failedAction,
+      errorMessage,
+      evidence,
+      selectorDiff,
+      ai,
+      aiLatencyMs,
+      interactionComparison,
+      matchedSnapshotId: comparison?.matchedSnapshotId,
+      currentFingerprint: comparison?.currentFingerprint,
+    });
+
+    return { scenarioName: world.scenarioName, failedAction, errorMessage, dom, evidence, similarityCandidates, rankedRootCauses, selectorDiff, patchSuggestion, interactionComparison, ai };
+  }
+
+  // ── Interaction comparison (old info vs new info) ────────────────────────────
+
+  /**
+   * Load the last successful snapshot for the failing locator and build the
+   * old-vs-new comparison. Also fingerprints the current best candidate so the
+   * diff reflects what the live DOM actually exposes. Returns undefined when no
+   * baseline exists or the store is unavailable. Never throws.
+   */
+  private static async buildInteractionComparison(
+    world: FailureWorldLike,
+    failedAction: FailedAction,
+    dom: DomIntelligenceResult,
+    selectorDiff: SelectorDiff | undefined,
+  ): Promise<{ comparison: InteractionComparison; matchedSnapshotId?: string; currentFingerprint?: InteractionFingerprint } | undefined> {
+    try {
+      if (!AiDbClient.isFeatureEnabled()) return undefined;
+      const locatorString = failedAction.selector;
+      if (!locatorString) return undefined;
+
+      const key = {
+        scenarioName: world.scenarioName,
+        stepText: failedAction.stepText,
+        url: world.page.url(),
+        locatorString,
+      };
+      const retrieved = await InteractionSnapshotRepo.findLatest(key);
+      if (!retrieved) return undefined;
+
+      // The current element to compare against: only use a high-confidence
+      // similarity match (preComputedLocator is gated at score ≥ 60), otherwise
+      // fall back to the original locator if the DOM resolves it. Deliberately
+      // NOT using locatorValidation?.locator here — that can be a low-score
+      // verified candidate from a completely different section of the page.
+      const currentLocatorStr =
+        selectorDiff?.preComputedLocator
+        ?? (dom.resolved ? locatorString : undefined);
+
+      let currentFingerprint: InteractionFingerprint | undefined;
+      let currentScreenshotBase64: string | undefined;
+      if (currentLocatorStr) {
+        const loc = locatorFromString(world.page, currentLocatorStr);
+        if (loc) {
+          currentFingerprint = await InteractionSnapshotCapture.extractFingerprint(world.page, loc);
+          currentScreenshotBase64 = await loc
+            .first()
+            .screenshot({ timeout: 3000 })
+            .then((b) => b.toString('base64'))
+            .catch(() => undefined);
+        }
+      }
+
+      // Guard: even when a candidate was found, reject it as "current element" if
+      // its accessible name is completely different from the baseline. This catches
+      // the "section removed" case where SimilarityEngine matched a different
+      // button (e.g. "Sign In") purely on shared role — not on any meaningful
+      // attribute. Threshold 0.3 is intentionally conservative so genuine renames
+      // (e.g. "Add to Cart" → "Add to Basket", similarity ≈ 0.72) still show a diff.
+      if (currentFingerprint) {
+        const prevName = (retrieved.snapshot.fingerprint.a11y.accessibleName ?? '').toLowerCase().trim();
+        const currName = (currentFingerprint.a11y.accessibleName ?? '').toLowerCase().trim();
+        if (prevName && currName && stringSimilarity(prevName, currName) < 0.3) {
+          logger.debug(
+            `[FIE] candidate accessible name "${currName}" too dissimilar to baseline "${prevName}" — treating as elementGone`
+          );
+          currentFingerprint = undefined;
+          currentScreenshotBase64 = undefined;
+        }
+      }
+
+      const comparison = InteractionDiff.buildComparison({
+        retrievalLevel: retrieved.retrievalLevel,
+        baselineDate: retrieved.snapshot.capturedAt,
+        previousFingerprint: retrieved.snapshot.fingerprint,
+        previousScreenshotBase64: retrieved.snapshot.screenshotBase64,
+        currentFingerprint,
+        currentScreenshotBase64,
+        suggestedLocator: currentLocatorStr,
+      });
+
+      // elementGone: DB has the element on record but it is completely absent from
+      // the current DOM (no current fingerprint could be built). This is the
+      // "section removed" case — do NOT suggest a replacement locator.
+      if (!currentFingerprint) {
+        comparison.elementGone = true;
+        const existingNote = comparison.note ? comparison.note + '; ' : '';
+        comparison.note = existingNote + 'element not found in current DOM — section or element was likely removed';
+      }
+
+      return { comparison, matchedSnapshotId: retrieved.id, currentFingerprint };
+    } catch (err) {
+      logger.debug(`[FIE] interaction comparison skipped: ${(err as Error).message}`);
+      return undefined;
+    }
+  }
+
+  /** Persist failed interaction + candidates + AI analysis (fire-and-forget). */
+  private static persistFailure(input: {
+    world: FailureWorldLike;
+    failedAction: FailedAction;
+    errorMessage: string;
+    evidence: SupportingEvidence;
+    selectorDiff?: SelectorDiff;
+    ai: import('./types').AiAnalysis;
+    aiLatencyMs: number;
+    interactionComparison?: InteractionComparison;
+    matchedSnapshotId?: string;
+    currentFingerprint?: InteractionFingerprint;
+  }): void {
+    if (!AiDbClient.isFeatureEnabled()) return;
+    const { world, failedAction } = input;
+    const locatorString = failedAction.selector;
+    if (!locatorString) return;
+
+    const key = {
+      scenarioName: world.scenarioName,
+      stepText: failedAction.stepText,
+      url: world.page.url(),
+      locatorString,
+    };
+
+    AiDbClient.enqueueWrite(async () => {
+      const failedId = await InteractionSnapshotRepo.upsertFailedInteraction({
+        key,
+        errorMessage: input.errorMessage,
+        stackTrace: input.evidence.stackTrace,
+        currentFingerprint: input.currentFingerprint,
+        matchedSnapshotId: input.matchedSnapshotId,
+      });
+      if (!failedId) return;
+
+      if (input.selectorDiff?.candidates?.length) {
+        await InteractionSnapshotRepo.replaceCandidates(failedId, input.selectorDiff.candidates);
+      }
+
+      await InteractionSnapshotRepo.upsertAiAnalysis(failedId, {
+        structuredInput: {
+          failedAction: input.failedAction,
+          selectorDiff: input.selectorDiff,
+          interactionComparison: input.interactionComparison,
+        },
+        structuredOutput: input.ai,
+        model: getEnv('GEMINI_MODEL', 'gemini-3.1-flash-lite'),
+        latencyMs: input.aiLatencyMs,
+        confidence: typeof input.ai.confidence === 'number' ? input.ai.confidence : undefined,
+      });
+    });
   }
 
   /** Attach named artifacts — appear as expandable steps inside Tear Down. */
@@ -240,7 +455,7 @@ export class FailureIntelligenceEngine {
 
     // ── 11. Whole DOM (complete page HTML) ───────────────────────────────────
     if (pkg.evidence.wholeDomHtml) {
-      await world.attach(pkg.evidence.wholeDomHtml, {
+      await world.attach(ReportRenderer.wholeDomSourceHtml(pkg.evidence.wholeDomHtml), {
         mediaType: 'text/html',
         fileName: 'Whole DOM',
       });
@@ -293,11 +508,13 @@ export class FailureIntelligenceEngine {
   }
 
   /**
-   * Draw a highlight rectangle over every element the suggested locator resolves
-   * to, then capture a full-page screenshot. Returns a base64 PNG, or undefined
-   * on any failure (never throws into the pipeline). Overlays are injected as
-   * absolutely-positioned DOM nodes at document coordinates so they line up with
-   * the element in a full-page (scrolled) capture, and are removed afterwards.
+   * Scroll the suggested target into view, draw a highlight rectangle over every
+   * element the locator resolves to, then capture a VIEWPORT screenshot so the
+   * annotated element is actually framed (a small element below the fold would
+   * otherwise be lost off-screen or buried in a tall full-page image). Overlays
+   * are injected as fixed-position nodes at viewport coordinates so they line up
+   * with the viewport capture, and are removed afterwards. Returns a base64 PNG,
+   * or undefined on any failure (never throws into the pipeline).
    */
   private static async captureAnnotatedScreenshot(page: Page, locatorStr: string): Promise<string | undefined> {
     try {
@@ -306,24 +523,33 @@ export class FailureIntelligenceEngine {
       const handles = await loc.elementHandles();
       if (handles.length === 0) return undefined;
 
+      // Bring the primary target to the centre of the viewport, then let any
+      // smooth-scroll / lazy layout settle before measuring + capturing.
+      await loc.first().scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => undefined);
+      await page.waitForTimeout(200);
+
       const MARKER = '__aia_highlight__';
       for (let i = 0; i < handles.length; i++) {
         await handles[i].evaluate((el, args: { marker: string; index: number; total: number }) => {
           const r = (el as HTMLElement).getBoundingClientRect();
           const box = document.createElement('div');
           box.className = args.marker;
+          // Fixed positioning + viewport coords so the box aligns with a viewport
+          // (non-fullPage) screenshot regardless of scroll offset.
           box.style.cssText =
-            `position:absolute;z-index:2147483647;pointer-events:none;` +
+            `position:fixed;z-index:2147483647;pointer-events:none;` +
             `border:3px solid #ff3b30;background:rgba(255,59,48,0.12);border-radius:3px;` +
             `box-shadow:0 0 0 2px rgba(255,255,255,0.7);` +
-            `left:${r.left + window.scrollX}px;top:${r.top + window.scrollY}px;` +
+            `left:${r.left}px;top:${r.top}px;` +
             `width:${r.width}px;height:${r.height}px;`;
           const label = document.createElement('div');
           label.textContent = args.total > 1
             ? `AI: suggested target ${args.index + 1}/${args.total}`
             : 'AI: suggested target';
+          // Keep the label on-screen even when the box sits near the top edge.
+          const labelTop = r.top < 24 ? 'bottom:-22px' : 'top:-22px';
           label.style.cssText =
-            `position:absolute;top:-22px;left:0;background:#ff3b30;color:#fff;` +
+            `position:absolute;${labelTop};left:0;background:#ff3b30;color:#fff;` +
             `font:600 11px/16px -apple-system,Segoe UI,sans-serif;padding:1px 6px;` +
             `border-radius:3px;white-space:nowrap;`;
           box.appendChild(label);
@@ -331,7 +557,8 @@ export class FailureIntelligenceEngine {
         }, { marker: MARKER, index: i, total: handles.length });
       }
 
-      const shot = await page.screenshot({ fullPage: true });
+      // Viewport capture (not fullPage) so the scrolled-to element is in frame.
+      const shot = await page.screenshot({ fullPage: false });
 
       await page.evaluate((marker) => {
         document.querySelectorAll('.' + marker).forEach((n) => n.remove());

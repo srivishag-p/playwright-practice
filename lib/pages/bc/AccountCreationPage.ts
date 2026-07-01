@@ -23,9 +23,10 @@ export class AccountCreationPage extends BasePage {
 
   // ── Step 2 — Address ─────────────────────────────────────────────────────
   // Oracle JET renders two DOM nodes per field: <oj-input-text> wrapper + native <input>.
-  // getByRole('textbox', { name: 'x' }) targets only the native <input> (fillable)
-  // and is the exact locator Playwright suggests for these Oracle JET components.
-  private streetAddressInput = this.page.getByRole('textbox', { name: 'street address' });
+  // The wrapper isn't fillable, so targeting it fails. The AI Failure Intelligence
+  // engine scanned the live DOM and verified getByPlaceholder('street address')
+  // resolves to exactly the fillable native input — applied here.
+  private streetAddressInput = this.page.getByPlaceholder('street address');
   private cityInput          = this.page.getByRole('textbox', { name: 'city' });
   private stateInput         = this.page.getByRole('textbox', { name: 'state' });
   private zipInput           = this.page.getByRole('textbox', { name: 'zip/postal code' });
@@ -50,7 +51,7 @@ export class AccountCreationPage extends BasePage {
 
   // XPath: //input[@value="Charge_Test_REST"]  → locator with value attribute
   // No getBy method exists for value attribute — CSS is the correct approach
-  private chargeTestCheckbox = this.page.locator('input[value="Charge_TestREST"]');
+  private chargeTestCheckbox = this.page.locator('input[value="Charge_Test_REST"]');
 
   constructor(page: Page) {
     super(page);
@@ -97,10 +98,12 @@ export class AccountCreationPage extends BasePage {
   // skips keydown/keyup events, so JET never updates its model.
   // pressSequentially fires each character individually, which JET picks up.
   private async jetFill(locator: Locator, value: string, description: string): Promise<void> {
+    // track() FIRST — before any awaited action that can throw — so a failure
+    // here records THIS locator, not the previous successful action.
+    this.track('fill', `Fill ${description}`, locator, value);
     await locator.click();
     await locator.press('Control+a');
     await locator.pressSequentially(value);
-    this.track('fill', `Fill ${description}`, locator, value);
   }
 
   async selectCountry(): Promise<void> {

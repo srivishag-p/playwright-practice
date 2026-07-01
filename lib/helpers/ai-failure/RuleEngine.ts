@@ -14,6 +14,7 @@ import type {
   EvidencePoint,
   FailedAction,
   RootCauseCandidate,
+  SimilarityCandidate,
   SupportingEvidence,
 } from './types';
 
@@ -22,6 +23,19 @@ interface RuleInput {
   errorMessage: string;
   dom: DomIntelligenceResult;
   evidence: SupportingEvidence;
+  /** Top candidates from SimilarityEngine — available before locator validation. */
+  similarityCandidates?: SimilarityCandidate[];
+}
+
+/**
+ * Returns true for transport-level failures that are genuinely caused by
+ * connectivity (connection refused, reset, DNS failure, etc.).
+ * Excludes net::ERR_ABORTED — that is the browser cancelling a request
+ * (navigation away, prefetch abort, analytics beacon), not a connectivity issue.
+ */
+function isRealTransportFailure(failureText: string): boolean {
+  const t = failureText.toLowerCase();
+  return !t.includes('aborted') && !t.includes('err_aborted');
 }
 
 export class RuleEngine {
@@ -33,6 +47,7 @@ export class RuleEngine {
       RuleEngine.ambiguousLocator(input),
       RuleEngine.locatorNotFound(input),
       RuleEngine.detachedElement(input),
+      RuleEngine.networkConnectivityFailure(input),
       RuleEngine.backendFailure(input),
       RuleEngine.assertionMismatch(input),
     ];
@@ -134,16 +149,31 @@ export class RuleEngine {
     };
   }
 
-  private static locatorNotFound({ errorMessage, dom }: RuleInput): RootCauseCandidate {
+  private static locatorNotFound({ errorMessage, dom, evidence, failedAction, similarityCandidates }: RuleInput): RootCauseCandidate {
     const e = RuleEngine.ev;
+    const hasNetworkFailures = evidence.networkFailures.length > 0;
+    const isElementAction = failedAction.action !== 'navigate';
+    // A high-confidence similarity candidate (score ≥ 60) means the element WAS found
+    // in the DOM under a different selector — definitive proof the locator strategy is
+    // wrong, not that the element is absent due to a network or rendering issue.
+    const topCandidate = similarityCandidates?.[0];
+    const elementFoundByAlternative = (topCandidate?.score ?? 0) >= 60;
     return {
       title: 'Incorrect locator (element never found)',
       confidence: 0,
       rawScore: 0,
       evidence: [
         e('Locator resolved to zero elements', dom.matchCount === 0, 40),
-        e('Timeout while waiting for the locator', RuleEngine.errIncludes(errorMessage, 'timeout', 'waiting for'), 30),
+        // Only count timeout as locator evidence when there are no network failures —
+        // a connectivity issue causes the same timeout but for a different reason.
+        e('Timeout while waiting for the locator (no network failures present)', RuleEngine.errIncludes(errorMessage, 'timeout', 'waiting for') && !hasNetworkFailures, 30),
         e('No element handle could be obtained', dom.resolved === false && !!dom.error, 20),
+        // An element interaction (click/fill/etc.) implies the page loaded successfully —
+        // a timeout here means the element itself is the problem, not a missing page.
+        e('Failed action was an element interaction, not a page navigation (page was already loaded)', isElementAction, 15),
+        // Strongest locator-mismatch signal: SimilarityEngine found the element in the
+        // DOM under a different selector. The element EXISTS — the strategy is wrong.
+        e('SimilarityEngine found a high-confidence alternative locator — element exists in DOM, locator strategy is wrong', elementFoundByAlternative, 35),
       ],
     };
   }
@@ -161,10 +191,39 @@ export class RuleEngine {
     };
   }
 
+  private static networkConnectivityFailure({ errorMessage, evidence, failedAction }: RuleInput): RootCauseCandidate {
+    const e = RuleEngine.ev;
+    // Exclude ERR_ABORTED — that is the browser cancelling a request (prefetch,
+    // navigation away, telemetry beacon), not a real connectivity failure.
+    const hasRealTransportFailure = evidence.networkFailures.some((n) => !!n.failure && isRealTransportFailure(n.failure));
+    const hasNetworkFailures = evidence.networkFailures.length > 0;
+    const isNavigateAction = failedAction.action === 'navigate';
+    return {
+      title: 'Network / connectivity failure',
+      confidence: 0,
+      rawScore: 0,
+      evidence: [
+        // Real transport-level failures only (connection refused/reset/DNS failure).
+        // ERR_ABORTED is excluded — it is the browser cancelling a request, not the
+        // server being unreachable.
+        e('One or more requests failed at the transport level (connection refused/reset/DNS — not browser-aborted)', hasRealTransportFailure, 55),
+        e('Error message contains a network error code (net::ERR_*, NS_ERROR_*, ERR_CONNECTION_*)', RuleEngine.errIncludes(errorMessage, 'net::err', 'ns_error', 'err_connection', 'err_network', 'err_timed_out', 'failed to fetch', 'network error'), 30),
+        e('Timeout in the error while network failures are present', RuleEngine.errIncludes(errorMessage, 'timeout') && hasNetworkFailures, 20),
+        // A navigation action failing alongside network errors is a strong signal the
+        // page itself was unreachable — not an element locator problem.
+        e('Failed action was a page navigation (page itself may not have loaded)', isNavigateAction && hasNetworkFailures, 20),
+        e('Console error logged alongside network failures', RuleEngine.hasConsoleError(evidence) && hasNetworkFailures, 10),
+      ],
+    };
+  }
+
   private static backendFailure({ evidence }: RuleInput): RootCauseCandidate {
     const e = RuleEngine.ev;
     const has5xx = evidence.networkFailures.some((n) => (n.status ?? 0) >= 500);
     const has4xx = evidence.networkFailures.some((n) => (n.status ?? 0) >= 400 && (n.status ?? 0) < 500);
+    // Real transport failures only — ERR_ABORTED is a browser-cancelled request
+    // (telemetry, prefetch) and should not count as a backend failure.
+    const hasRealTransportFailure = evidence.networkFailures.some((n) => !!n.failure && isRealTransportFailure(n.failure));
     return {
       title: 'Backend / API failure',
       confidence: 0,
@@ -172,7 +231,7 @@ export class RuleEngine {
       evidence: [
         e('A network request failed with a 5xx response', has5xx, 40),
         e('A network request failed with a 4xx response', has4xx, 25),
-        e('One or more requests failed at the transport level', evidence.networkFailures.some((n) => !!n.failure), 20),
+        e('One or more requests failed at the transport level (not browser-aborted)', hasRealTransportFailure, 20),
         e('Console reports an unhandled error', RuleEngine.hasConsoleError(evidence), 10),
       ],
     };

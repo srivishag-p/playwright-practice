@@ -38,6 +38,7 @@ export class ReportRenderer {
   ${ReportRenderer.envBar(pkg)}
   ${ReportRenderer.summary(pkg)}
   ${ReportRenderer.selectorDiffSection(pkg)}
+  ${ReportRenderer.interactionComparisonSection(pkg)}
   ${ReportRenderer.patchSection(pkg)}
   ${ReportRenderer.aiRecommendation(pkg)}
   ${ReportRenderer.timelineSection(pkg)}
@@ -101,10 +102,18 @@ export class ReportRenderer {
            <pre style="font-size:12px;line-height:1.7">${esc(dom.domTree)}</pre>
          </section>` : '';
 
+    const a11yTreeBlock = dom.a11yTree
+      ? `<section>
+           <h2>♿ Accessibility Tree</h2>
+           <p class="muted" style="font-size:12px">Browser-computed role + accessible name for each element — the authoritative source used to find role/name locators.</p>
+           <pre style="font-size:12px;line-height:1.6">${esc(dom.a11yTree)}</pre>
+         </section>` : '';
+
     return page('DOM Context', `
 ${errorNote}
 ${fingerprintBlock}
 ${a11yBlock}
+${a11yTreeBlock}
 <section>
   <h2>🗂 Element State</h2>
   ${dom.state ? `<table class="info-table">
@@ -127,6 +136,16 @@ ${a11yBlock}
 </section>
 ${ancestorBlock}
 ${treeBlock}`);
+  }
+
+  /** Wraps raw HTML source in a <pre> so Allure shows it as code, not a rendered page. */
+  static wholeDomSourceHtml(rawHtml: string): string {
+    return page('Whole DOM Source', `
+<section>
+  <h2>📄 Complete Page HTML</h2>
+  <p class="muted" style="font-size:12px">Full HTML snapshot of the page at the time of failure.</p>
+  <pre style="font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;background:#f8f8f8;border:1px solid #dadde1;border-radius:6px;padding:12px;overflow:auto">${esc(rawHtml)}</pre>
+</section>`);
   }
 
   /** Full HTML page: colour-coded network request table. */
@@ -352,6 +371,9 @@ ${summary}
       const treeBlock = dom.domTree
         ? `<h3 style="font-size:13px;margin:12px 0 4px">Compressed DOM Tree</h3><pre style="font-size:12px;line-height:1.7">${esc(dom.domTree)}</pre>`
         : '';
+      const a11yTreeBlock = dom.a11yTree
+        ? `<h3 style="font-size:13px;margin:12px 0 4px">♿ Accessibility Tree (role + name)</h3><pre style="font-size:12px;line-height:1.6">${esc(dom.a11yTree)}</pre>`
+        : '';
       const errorNote = dom.error
         ? `<p class="muted" style="font-size:12px">⚠️ ${esc(dom.error)}</p>` : '';
 
@@ -365,6 +387,7 @@ ${summary}
   </div>
   ${attrRows}
   ${treeBlock}
+  ${a11yTreeBlock}
 </section>`;
     })();
 
@@ -543,9 +566,26 @@ ${stackSection}
            </ul>
          </div>`
       : '';
-    const text = ai.rootCause
-      ? `<strong>${esc(ai.rootCause)}</strong><br>${esc(ai.explanation ?? '')}${classificationBar}${confidenceBlock}${alternativesBlock}`
-      : esc(ai.raw ?? '');
+    let text: string;
+    if (ai.rootCause) {
+      text = `<strong>${esc(ai.rootCause)}</strong><br>${esc(ai.explanation ?? '')}${classificationBar}${confidenceBlock}${alternativesBlock}`;
+    } else if (ai.raw) {
+      // Parse failed — attempt re-parse of raw JSON, otherwise show as preformatted block
+      try {
+        const parsed = JSON.parse(ai.raw) as Record<string, unknown>;
+        const rc = String(parsed.rootCause ?? '');
+        const ex = String(parsed.explanation ?? parsed.fix ?? parsed.betterLocator ?? '');
+        const cl = String(parsed.issueClassification ?? '');
+        const co = Number(parsed.confidence ?? 0);
+        text = rc
+          ? `<strong>${esc(rc)}</strong>${ex ? `<br>${esc(ex)}` : ''}${cl ? `<br><span style="background:#dadde1;color:#1c1e21;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:600">Classification: ${esc(cl)}</span>` : ''}${co ? `<br><span style="font-size:12px;color:#65676b">Confidence: ${co}%</span>` : ''}`
+          : `<pre style="margin:0;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all">${esc(ai.raw)}</pre>`;
+      } catch {
+        text = `<pre style="margin:0;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all">${esc(ai.raw)}</pre>`;
+      }
+    } else {
+      text = '';
+    }
     return `
 <h2 style="margin:0 0 4px">🤖 AI Recommendation</h2>
 <div style="background:#e8f0fe;border:1px solid #aac4f5;border-radius:8px;padding:12px 16px;margin:8px 0 20px;font-size:14px">
@@ -555,10 +595,66 @@ ${stackSection}
 
   // ── 4. Ranked root causes ────────────────────────────────────────────────────
 
+  /**
+   * When both "Network / connectivity failure" and "Incorrect locator" score above
+   * a threshold, it is ambiguous whether the network caused the timeout or the
+   * locator was simply wrong (with background XHR failures happening coincidentally).
+   * This callout explains the difference so the engineer knows what to check first.
+   */
+  private static disambiguationNote(causes: RootCauseCandidate[], pkg: FailureIntelligencePackage): string {
+    const THRESHOLD = 35;
+    const network = causes.find((c) => c.title === 'Network / connectivity failure');
+    const locator = causes.find((c) => c.title === 'Incorrect locator (element never found)');
+    if (!network || !locator || network.confidence < THRESHOLD || locator.confidence < THRESHOLD) return '';
+
+    // When SimilarityEngine found a verified alternative locator (element exists in
+    // the DOM under a different selector), the failure is definitively a locator
+    // strategy mismatch — not a network issue. Suppress the ambiguity note so the
+    // report doesn't create false doubt about network being a cause.
+    const topCandidate = pkg.similarityCandidates?.[0];
+    const elementVerifiedInDom = (topCandidate?.score ?? 0) >= 60;
+    if (elementVerifiedInDom) return '';
+
+    const isNavigate = pkg.failedAction.action === 'navigate';
+    // Only real transport failures (not ERR_ABORTED / browser-cancelled requests).
+    const hasRealTransport = pkg.evidence.networkFailures.some(
+      (n) => !!n.failure && !n.failure.toLowerCase().includes('aborted') && !n.failure.toLowerCase().includes('err_aborted')
+    );
+
+    const likely = network.confidence > locator.confidence
+      ? `<strong>Network issue is the more likely cause</strong> (scored ${network.confidence}% vs locator at ${locator.confidence}%).`
+      : network.confidence === locator.confidence
+        ? `<strong>Both causes are equally scored</strong> (${network.confidence}%) — manual inspection required.`
+        : `<strong>Locator problem is the more likely cause</strong> (scored ${locator.confidence}% vs network at ${network.confidence}%).`;
+
+    const actionHint = isNavigate
+      ? `The failing action was a <strong>page navigation</strong> — if the page itself could not load, the locator never had a chance to match. Check whether the browser reached the URL before diagnosing the locator.`
+      : `The failing action was an <strong>element interaction</strong> (${esc(pkg.failedAction.action)}) — this suggests the page <em>did</em> load. Background XHR/API failures at this point do not always prevent a locator from resolving.`;
+
+    const transportHint = hasRealTransport
+      ? `<li>A <strong>transport-level failure</strong> was detected (connection refused/reset, no HTTP status). This can prevent <em>dynamically loaded</em> content from appearing even after the main page loads.</li>`
+      : `<li>All network errors have HTTP status codes (4xx/5xx) — these come from the server responding, not from a connectivity drop. A 4xx/5xx alone rarely prevents a static locator from resolving.</li>`;
+
+    return `
+<div style="margin-bottom:16px;background:#fffde7;border:1px solid #ffe082;border-radius:8px;padding:12px 16px;font-size:13px">
+  <div style="font-weight:700;color:#7b5800;margin-bottom:6px">⚠️ Ambiguous failure — network issue or bad locator?</div>
+  <p style="margin:0 0 8px">${likely}</p>
+  <p style="margin:0 0 8px">${actionHint}</p>
+  <p style="margin:0 0 6px;font-weight:600;color:#3a3b3c">How to tell which is the real cause:</p>
+  <ul style="margin:0;padding-left:18px;line-height:1.7">
+    ${transportHint}
+    <li>Open the <strong>Network Activity</strong> attachment — if failures are for <em>background API calls only</em> (not the main page URL), the locator is the more likely culprit.</li>
+    <li>If the navigation/step <strong>before this one passed</strong>, the page loaded and the locator is suspect. If navigation itself failed, fix connectivity first.</li>
+    <li>Check <strong>Console Logs</strong> for JS errors that could have broken the page after load (a render crash that removes the target element from the DOM).</li>
+  </ul>
+</div>`;
+  }
+
   private static rootCauses(causes: RootCauseCandidate[], pkg: FailureIntelligencePackage): string {
     if (!causes.length) {
       return `<p style="color:#65676b">No deterministic root-cause candidates scored above zero.</p>`;
     }
+    const disambig = ReportRenderer.disambiguationNote(causes, pkg);
     const items = causes
       .map((c, i) => {
         const reason = pkg.ai.scoreExplanations?.[c.title];
@@ -580,7 +676,7 @@ ${stackSection}
 </div>`;
       })
       .join('');
-    return `<h2 style="margin:24px 0 8px">📊 Ranked Root Causes</h2>${items}`;
+    return `<h2 style="margin:24px 0 8px">📊 Ranked Root Causes</h2>${disambig}${items}`;
   }
 
   private static timelineSection(pkg: FailureIntelligencePackage): string {
@@ -612,6 +708,153 @@ ${stackSection}
    * BEFORE the Gemini call. Shown even when AI is disabled or timed out, because
    * it is derived entirely from the live DOM via SimilarityEngine — no LLM needed.
    */
+  /**
+   * Interaction Comparison — the "old info vs new info" section. Renders the
+   * last successful element state beside the current DOM, the measured changes,
+   * and the AI's changeAnalysis. Only shown when a baseline snapshot was found.
+   */
+  private static interactionComparisonSection(pkg: FailureIntelligencePackage): string {
+    const ic = pkg.interactionComparison;
+    if (!ic) return '';
+
+    const fmtDate = (iso?: string) => {
+      if (!iso) return 'previously';
+      try { return new Date(iso).toLocaleString(); } catch { return iso; }
+    };
+
+    const levelNote = ic.retrievalLevel > 2
+      ? `<span style="background:#fff8e1;border:1px solid #ffe08a;color:#8a6d00;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600">partial match · level ${ic.retrievalLevel}</span>`
+      : `<span style="background:#e6ffed;border:1px solid #a7f3d0;color:#1a7f37;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600">exact baseline match</span>`;
+
+    const shot = (b64?: string, label?: string) => b64
+      ? `<div style="margin-top:8px"><img src="data:image/png;base64,${b64}" alt="${esc(label ?? '')}" style="max-width:100%;border:1px solid #d0d7de;border-radius:6px"/></div>`
+      : '';
+
+    const fpColumn = (
+      title: string,
+      accent: string,
+      fp: import('./types').FingerprintSummary | undefined,
+      b64: string | undefined,
+    ) => {
+      if (!fp) {
+        return `<div style="flex:1;min-width:240px">
+          <div style="font-size:12px;font-weight:700;color:${accent};margin-bottom:6px">${esc(title)}</div>
+          <p style="font-size:12px;color:#65676b">No element resolved to compare.</p>
+        </div>`;
+      }
+      const row = (k: string, val?: string) => val
+        ? `<tr><td style="padding:2px 10px 2px 0;color:#65676b;white-space:nowrap">${esc(k)}</td><td style="font-family:monospace;font-size:12px">${esc(val)}</td></tr>`
+        : '';
+      return `<div style="flex:1;min-width:240px">
+        <div style="font-size:12px;font-weight:700;color:${accent};margin-bottom:6px">${esc(title)}</div>
+        <table style="border-collapse:collapse">
+          ${row('role', fp.role)}
+          ${row('accessible name', fp.accessibleName)}
+          ${row('tag', fp.tag)}
+          ${row('text', fp.text)}
+          ${row('placeholder', fp.placeholder)}
+          ${row('parent', fp.parentRole || fp.parentName ? `${fp.parentRole ?? ''}${fp.parentName ? `(${fp.parentName})` : ''}` : undefined)}
+        </table>
+        <div style="margin-top:6px;font-size:11px;color:#65676b"><strong>path:</strong> <code style="font-size:11px">${esc(fp.semanticPath || '—')}</code></div>
+        ${shot(b64, title)}
+      </div>`;
+    };
+
+    // Detected changes table.
+    const changesBlock = ic.detectedChanges.length
+      ? `<div style="margin-top:16px">
+          <span style="font-size:12px;font-weight:700;color:#3a3b3c">What changed (${ic.detectedChanges.length})</span>
+          <table style="width:100%;border-collapse:collapse;margin-top:6px;font-size:13px">
+            <thead><tr style="text-align:left;color:#65676b;font-size:11px;text-transform:uppercase">
+              <th style="padding:4px 8px">Field</th><th style="padding:4px 8px">Was (working)</th><th style="padding:4px 8px">Now (failing)</th>
+            </tr></thead>
+            <tbody>
+              ${ic.detectedChanges.map((c) => `<tr style="border-top:1px solid #eaecef">
+                <td style="padding:4px 8px;font-weight:600">${esc(c.field)}</td>
+                <td style="padding:4px 8px;color:#b71c1c"><code style="font-size:12px">${esc(c.from || '∅')}</code></td>
+                <td style="padding:4px 8px;color:#1a7f37"><code style="font-size:12px">${esc(c.to || '∅')}</code></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`
+      : `<p style="margin-top:14px;font-size:13px;color:#65676b">No field-level differences measured${ic.current ? '' : ' — no current element resolved, so the element was likely removed or moved'}.</p>`;
+
+    // AI change analysis.
+    const ca = pkg.ai.changeAnalysis;
+    const aiBlock = ca && (ca.whatChanged || ca.whyCausedFailure || ca.fix)
+      ? `<div style="margin-top:16px;background:#f0f6ff;border:1px solid #b6daff;border-radius:8px;padding:12px 16px">
+          <div style="font-size:12px;font-weight:700;color:#0b5cad;margin-bottom:6px">🤖 AI change analysis</div>
+          ${ca.whatChanged ? `<p style="margin:4px 0;font-size:13px"><strong>What changed:</strong> ${esc(ca.whatChanged)}</p>` : ''}
+          ${ca.whyCausedFailure ? `<p style="margin:4px 0;font-size:13px"><strong>Why it failed:</strong> ${esc(ca.whyCausedFailure)}</p>` : ''}
+          ${ca.fix ? `<p style="margin:4px 0;font-size:13px"><strong>Fix:</strong> <code style="background:#e6ffed;border:1px solid #a7f3d0;padding:2px 8px;border-radius:6px">${esc(ca.fix)}</code></p>` : ''}
+        </div>`
+      : '';
+
+    const noteBlock = ic.note
+      ? `<p style="margin:6px 0 0;font-size:12px;color:#8a6d00">⚠ ${esc(ic.note)}</p>`
+      : '';
+
+    // ── Element removed — show a banner instead of the comparison table ────────
+    if (ic.elementGone) {
+      const ca = pkg.ai.changeAnalysis;
+      const aiRemovedBlock = ca && (ca.whatChanged || ca.whyCausedFailure)
+        ? `<div style="margin-top:14px;background:#fdf2f2;border:1px solid #f5c6cb;border-radius:8px;padding:12px 16px">
+            <div style="font-size:12px;font-weight:700;color:#b71c1c;margin-bottom:6px">🤖 AI analysis</div>
+            ${ca.whatChanged ? `<p style="margin:4px 0;font-size:13px"><strong>What was removed:</strong> ${esc(ca.whatChanged)}</p>` : ''}
+            ${ca.whyCausedFailure ? `<p style="margin:4px 0;font-size:13px"><strong>Why the test failed:</strong> ${esc(ca.whyCausedFailure)}</p>` : ''}
+            <p style="margin:8px 0 0;font-size:12px;color:#b71c1c;font-weight:600">⚠ The fix requires an APPLICATION change — restore the removed element/section. There is no automation locator to update.</p>
+          </div>`
+        : '';
+      const prevFp = ic.previous;
+      const prevBlock = prevFp
+        ? `<div style="margin-top:14px">
+            <div style="font-size:12px;font-weight:700;color:#3a3b3c;margin-bottom:6px">Last known state of the element (from DB baseline)</div>
+            <table style="border-collapse:collapse;font-size:13px">
+              ${prevFp.role ? `<tr><td style="padding:2px 10px 2px 0;color:#65676b">role</td><td><code>${esc(prevFp.role)}</code></td></tr>` : ''}
+              ${prevFp.accessibleName ? `<tr><td style="padding:2px 10px 2px 0;color:#65676b">accessible name</td><td><code>${esc(prevFp.accessibleName)}</code></td></tr>` : ''}
+              ${prevFp.tag ? `<tr><td style="padding:2px 10px 2px 0;color:#65676b">tag</td><td><code>&lt;${esc(prevFp.tag)}&gt;</code></td></tr>` : ''}
+              ${prevFp.placeholder ? `<tr><td style="padding:2px 10px 2px 0;color:#65676b">placeholder</td><td><code>${esc(prevFp.placeholder)}</code></td></tr>` : ''}
+              ${prevFp.semanticPath ? `<tr><td style="padding:2px 10px 2px 0;color:#65676b">path</td><td><code style="font-size:11px">${esc(prevFp.semanticPath)}</code></td></tr>` : ''}
+            </table>
+            ${ic.previousScreenshotBase64 ? `<div style="margin-top:8px"><img src="data:image/png;base64,${ic.previousScreenshotBase64}" alt="Last known screenshot" style="max-width:320px;border:1px solid #d0d7de;border-radius:6px"/></div>` : ''}
+          </div>`
+        : '';
+      return `
+<section style="margin-top:24px;padding:16px 20px;background:#fff5f5;border:2px solid #f5c6cb;border-radius:10px">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+    <span style="font-size:2rem">🚫</span>
+    <div>
+      <h2 style="margin:0;font-size:16px;color:#b71c1c">Element No Longer Exists in the Current DOM</h2>
+      <div style="font-size:12px;color:#65676b;margin-top:2px">
+        DB baseline captured ${esc(fmtDate(ic.baselineDate))} &nbsp; ${levelNote}
+      </div>
+    </div>
+  </div>
+  <div style="background:#fdecea;border:1px solid #f5c6cb;border-radius:8px;padding:10px 14px;font-size:13px;color:#b71c1c;font-weight:500">
+    The interaction snapshot database has a confirmed record of this element from a previous successful run,
+    but it cannot be found <strong>anywhere</strong> in the current DOM. A UI section or element was removed from the application.
+    The automation locator is not the problem — the <strong>application code must be restored</strong>.
+  </div>
+  ${prevBlock}
+  ${aiRemovedBlock}
+  ${noteBlock}
+</section>`;
+    }
+
+    return `
+<section style="margin-top:24px;padding:16px 20px;background:#fff;border:1px solid #e0e0e0;border-radius:10px">
+  <h2 style="margin:0 0 4px;font-size:16px;color:#1c1e21">🔄 Interaction Comparison — what changed since this last worked</h2>
+  <div style="font-size:12px;color:#65676b;margin-bottom:12px">Baseline captured ${esc(fmtDate(ic.baselineDate))} &nbsp; ${levelNote}</div>
+  <div style="display:flex;gap:24px;flex-wrap:wrap">
+    ${fpColumn('Previous (last working)', '#b71c1c', ic.previous, ic.previousScreenshotBase64)}
+    ${fpColumn('Current (failing)', '#1a7f37', ic.current, ic.currentScreenshotBase64)}
+  </div>
+  ${changesBlock}
+  ${aiBlock}
+  ${noteBlock}
+</section>`;
+  }
+
   private static selectorDiffSection(pkg: FailureIntelligencePackage): string {
     const diff = pkg.selectorDiff;
     if (!diff) return '';

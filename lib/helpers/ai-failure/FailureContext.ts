@@ -21,6 +21,8 @@ export class FailureContext {
 
   lastAction?: ActionRecord;
   currentStepText = '';
+  /** Scenario name, set by the Before hook — used to key interaction snapshots. */
+  scenarioName = '';
   readonly consoleLogs: ConsoleEntry[] = [];
   readonly networkRequests: NetworkEntry[] = [];
   readonly networkFailures: NetworkEntry[] = [];
@@ -51,6 +53,10 @@ export class FailureContext {
 
   setCurrentStep(text: string): void {
     this.currentStepText = text;
+  }
+
+  setScenario(name: string): void {
+    this.scenarioName = name;
   }
 
   // ── Browser event sinks (attached once per page in the World) ──────────────

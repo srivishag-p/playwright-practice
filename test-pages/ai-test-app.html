@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Customer Portal — AI Test App</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --primary: #4f46e5;
+      --primary-dark: #3730a3;
+      --accent: #06b6d4;
+      --success: #10b981;
+      --danger: #ef4444;
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --border: #e2e8f0;
+      --text: #1e293b;
+      --muted: #64748b;
+      --radius: 12px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────────────── */
+    header {
+      background: var(--primary);
+      color: white;
+      padding: 0 2rem;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 8px rgba(79,70,229,0.4);
+    }
+    header .logo { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.5px; }
+    header nav a {
+      color: rgba(255,255,255,0.8);
+      text-decoration: none;
+      margin-left: 1.5rem;
+      font-size: 0.9rem;
+      transition: color 0.2s;
+    }
+    header nav a:hover { color: white; }
+    #cart-badge {
+      background: var(--accent);
+      color: white;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-left: 4px;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────────────────── */
+    main { max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; }
+
+    .section-label {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+
+    /* ── Card ───────────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.75rem 2rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+    }
+    .card h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .section-icon { font-size: 1.1rem; }
+
+    /* ── Form controls ──────────────────────────────────────────────────────── */
+    .form-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.25rem;
+    }
+    .form-group { display: flex; flex-direction: column; gap: 0.35rem; }
+    .form-group label { font-size: 0.82rem; font-weight: 600; color: var(--muted); }
+    .form-group input,
+    .form-group select {
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem 0.85rem;
+      font-size: 0.95rem;
+      font-family: inherit;
+      color: var(--text);
+      background: white;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      width: 100%;
+    }
+    .form-group input:focus,
+    .form-group select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(79,70,229,0.12);
+    }
+
+    /* ── Buttons ────────────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.6rem 1.4rem;
+      border-radius: 8px;
+      border: none;
+      font-size: 0.9rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
+    }
+    .btn:active { transform: scale(0.97); }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover { background: var(--primary-dark); box-shadow: 0 2px 8px rgba(79,70,229,0.35); }
+    .btn-secondary { background: #f8fafc; color: var(--text); border: 1.5px solid var(--border); }
+    .btn-secondary:hover { background: #f1f5f9; }
+    .btn-success { background: var(--success); color: white; }
+    .btn-success:hover { background: #059669; }
+    .btn-cart { background: var(--accent); color: white; width: 100%; justify-content: center; }
+    .btn-cart:hover { background: #0891b2; }
+
+    /* ── Toast notifications ────────────────────────────────────────────────── */
+    #toast-container {
+      position: fixed;
+      top: 1rem;
+      right: 1rem;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .toast {
+      background: var(--text);
+      color: white;
+      padding: 0.75rem 1.25rem;
+      border-radius: 8px;
+      font-size: 0.88rem;
+      font-weight: 500;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      animation: slide-in 0.3s ease;
+    }
+    .toast.success { background: var(--success); }
+    .toast.danger  { background: var(--danger); }
+    @keyframes slide-in {
+      from { opacity: 0; transform: translateX(20px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    /* ── Products grid ──────────────────────────────────────────────────────── */
+    .products-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 1.25rem;
+    }
+    .product-card {
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      transition: box-shadow 0.2s;
+    }
+    .product-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+    .product-img {
+      height: 100px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 3rem;
+      background: #f8fafc;
+    }
+    .product-name { font-weight: 600; font-size: 0.95rem; }
+    .product-price { color: var(--primary); font-weight: 700; font-size: 1.05rem; }
+    .product-desc { font-size: 0.82rem; color: var(--muted); line-height: 1.5; }
+
+    /* ── Cart items ─────────────────────────────────────────────────────────── */
+    #cart-items-list { margin-bottom: 1rem; }
+    .cart-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.6rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    .cart-item:last-child { border-bottom: none; }
+    .cart-empty { color: var(--muted); font-size: 0.9rem; font-style: italic; }
+    .cart-total-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 2px solid var(--border);
+      font-weight: 700;
+    }
+    #cart-total-amount { color: var(--primary); font-size: 1.1rem; }
+
+    /* ── Payment ────────────────────────────────────────────────────────────── */
+    .card-row { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem; }
+
+    /* ── Order confirmation ─────────────────────────────────────────────────── */
+    #order-confirmation {
+      display: none;
+      text-align: center;
+      padding: 2rem;
+    }
+    #order-confirmation .check-icon { font-size: 4rem; margin-bottom: 1rem; }
+    #order-confirmation h3 { font-size: 1.4rem; margin-bottom: 0.5rem; color: var(--success); }
+    #order-confirmation p { color: var(--muted); margin-bottom: 0.25rem; }
+    #order-id { font-weight: 700; color: var(--text); }
+
+    /* ── Misc ───────────────────────────────────────────────────────────────── */
+    .mt-1 { margin-top: 1rem; }
+    .flex-end { display: flex; justify-content: flex-end; }
+    .status-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge-indigo { background: #ede9fe; color: var(--primary); }
+  </style>
+</head>
+<body>
+
+<div id="toast-container"></div>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     HEADER
+════════════════════════════════════════════════════════════════════════ -->
+<header>
+  <span class="logo">🛒 CustomerPortal</span>
+  <nav>
+    <a href="#section-profile" aria-label="My Profile">Profile</a>
+    <a href="#section-products" aria-label="Browse Products">Products</a>
+    <a href="#section-cart" aria-label="View Cart">Cart <span id="cart-badge">0</span></a>
+    <a href="#section-payment" aria-label="Checkout">Checkout</a>
+  </nav>
+</header>
+
+<main>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       SECTION 1 — LOGIN
+       Remove or comment out this entire <section> block to test AI detection
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <section id="section-login">
+    <p class="section-label">Section 1 · Authentication</p>
+    <div class="card">
+      <h2><span class="section-icon">🔐</span> Sign In to Your Account</h2>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="username">Username</label>
+          <input id="username" type="text" name="username"
+                 aria-label="Username" placeholder="Enter your username" autocomplete="username" />
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input id="password" type="password" name="password"
+                 aria-label="Password" placeholder="Enter your password" autocomplete="current-password" />
+        </div>
+      </div>
+      <div class="flex-end">
+        <button id="login-btn" class="btn btn-primary" aria-label="Sign In">
+          Sign In
+        </button>
+      </div>
+      <p id="login-status" style="display:none; margin-top:0.75rem; color:var(--success); font-size:0.88rem; font-weight:600;"></p>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       SECTION 2 — USER PROFILE
+       Remove or comment out this entire <section> block to test AI detection
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <section id="section-profile">
+    <p class="section-label">Section 2 · User Profile</p>
+    <div class="card">
+      <h2><span class="section-icon">👤</span> My Profile <span class="status-badge badge-indigo" style="margin-left:auto;">Active</span></h2>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="full-name">Full Name</label>
+          <input id="full-name" type="text" name="fullName"
+                 aria-label="Full Name" placeholder="Enter your full name" />
+        </div>
+        <div class="form-group">
+          <label for="email-address">Email Address</label>
+          <input id="email-address" type="email" name="email"
+                 aria-label="Email Address" placeholder="Enter your email" />
+        </div>
+        <div class="form-group">
+          <label for="phone-number">Phone Number</label>
+          <input id="phone-number" type="tel" name="phone"
+                 aria-label="Phone Number" placeholder="+60 12 345 6789" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="department">Department</label>
+          <select id="department" name="department" aria-label="Department">
+            <option value="">Select department</option>
+            <option value="engineering">Engineering</option>
+            <option value="qa">Quality Assurance</option>
+            <option value="product">Product</option>
+            <option value="design">Design</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="employee-id">Employee ID</label>
+          <input id="employee-id" type="text" name="employeeId"
+                 aria-label="Employee ID" placeholder="EMP-0001" />
+        </div>
+      </div>
+      <div class="flex-end">
+        <button id="save-profile-btn" class="btn btn-primary" aria-label="Save Profile">
+          Save Profile
+        </button>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       SECTION 3 — PRODUCT CATALOG
+       Rename test: aria-label changed from "Add Wireless Headphones to cart"
+       to "Add Wireless Headphones to basket" — AI should detect the rename
+       and suggest the correct updated locator.
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <section id="section-products">
+    <p class="section-label">Section 3 · Product Catalog</p>
+    <div class="card">
+      <h2><span class="section-icon">📦</span> Available Products</h2>
+      <div class="products-grid">
+
+        <div class="product-card" aria-label="Product: Wireless Headphones">
+          <div class="product-img">🎧</div>
+          <div class="product-name">Wireless Headphones</div>
+          <div class="product-price">$49.99</div>
+          <div class="product-desc">Premium noise-cancelling over-ear headphones with 30hr battery.</div>
+          <button class="btn btn-cart add-to-cart"
+                  aria-label="Add Wireless Headphones to Cart"
+                  data-name="Wireless Headphones" data-price="49.99">
+            Add to Basket
+          </button>
+        </div>
+
+        <div class="product-card" aria-label="Product: Smart Watch">
+          <div class="product-img">⌚</div>
+          <div class="product-name">Smart Watch</div>
+          <div class="product-price">$129.99</div>
+          <div class="product-desc">Fitness tracking, heart-rate monitor, sleep analysis.</div>
+          <button class="btn btn-cart add-to-cart"
+                  aria-label="Add Smart Watch to cart"
+                  data-name="Smart Watch" data-price="129.99">
+            Add to Cart
+          </button>
+        </div>
+
+        <div class="product-card" aria-label="Product: USB-C Hub">
+          <div class="product-img">🔌</div>
+          <div class="product-name">USB-C Hub</div>
+          <div class="product-price">$29.99</div>
+          <div class="product-desc">7-in-1 hub: HDMI 4K, USB-A ×3, SD/microSD, 100W PD.</div>
+          <button class="btn btn-cart add-to-cart"
+                  aria-label="Add USB-C Hub to cart"
+                  data-name="USB-C Hub" data-price="29.99">
+            Add to Cart
+          </button>
+        </div>
+
+        <div class="product-card" aria-label="Product: Mechanical Keyboard">
+          <div class="product-img">⌨️</div>
+          <div class="product-name">Mechanical Keyboard</div>
+          <div class="product-price">$89.99</div>
+          <div class="product-desc">Compact TKL layout, RGB backlit, Cherry MX Brown switches.</div>
+          <button class="btn btn-cart add-to-cart"
+                  aria-label="Add Mechanical Keyboard to cart"
+                  data-name="Mechanical Keyboard" data-price="89.99">
+            Add to Cart
+          </button>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       SECTION 4 — SHOPPING CART
+       Remove or comment out this entire <section> block to test AI detection
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <section id="section-cart">
+    <p class="section-label">Section 4 · Shopping Cart</p>
+    <div class="card">
+      <h2><span class="section-icon">🛒</span> Your Cart</h2>
+      <div id="cart-items-list">
+        <p class="cart-empty" id="cart-empty-msg">No items in cart. Add some products above.</p>
+      </div>
+      <div class="cart-total-row">
+        <span>Order Total</span>
+        <span id="cart-total-amount">$0.00</span>
+      </div>
+      <div class="flex-end mt-1">
+        <button id="apply-coupon-btn" class="btn btn-secondary" aria-label="Apply Coupon Code"
+                style="margin-right:0.75rem;">
+          Apply Coupon
+        </button>
+        <button id="checkout-btn" class="btn btn-primary" aria-label="Proceed to Checkout">
+          Proceed to Checkout
+        </button>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       SECTION 5 — PAYMENT
+       Remove or comment out this entire <section> block to test AI detection
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <section id="section-payment">
+    <p class="section-label">Section 5 · Payment</p>
+    <div class="card">
+      <h2><span class="section-icon">💳</span> Payment Details</h2>
+
+      <div id="payment-form-content">
+        <div class="card-row">
+          <div class="form-group">
+            <label for="card-number">Card Number</label>
+            <input id="card-number" type="text" name="cardNumber"
+                   aria-label="Card Number" placeholder="1234 5678 9012 3456" maxlength="19" />
+          </div>
+          <div class="form-group">
+            <label for="card-expiry">Expiry Date</label>
+            <input id="card-expiry" type="text" name="cardExpiry"
+                   aria-label="Expiry Date" placeholder="MM/YY" maxlength="5" />
+          </div>
+          <div class="form-group">
+            <label for="card-cvv">CVV</label>
+            <input id="card-cvv" type="text" name="cardCvv"
+                   aria-label="CVV" placeholder="123" maxlength="4" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="card-holder">Cardholder Name</label>
+            <input id="card-holder" type="text" name="cardHolder"
+                   aria-label="Cardholder Name" placeholder="Name as on card" />
+          </div>
+          <div class="form-group">
+            <label for="billing-country">Billing Country</label>
+            <select id="billing-country" name="billingCountry" aria-label="Billing Country">
+              <option value="">Select country</option>
+              <option value="MY">Malaysia</option>
+              <option value="IN">India</option>
+              <option value="SG">Singapore</option>
+              <option value="AU">Australia</option>
+              <option value="GB">United Kingdom</option>
+              <option value="US">United States</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="billing-zip">Billing Zip / Postcode</label>
+            <input id="billing-zip" type="text" name="billingZip"
+                   aria-label="Billing Zip Code" placeholder="50480" />
+          </div>
+        </div>
+
+        <div class="flex-end">
+          <button id="pay-btn" class="btn btn-success" aria-label="Pay Now">
+            Pay Now
+          </button>
+        </div>
+      </div>
+
+      <div id="order-confirmation">
+        <div class="check-icon">✅</div>
+        <h3>Order Confirmed!</h3>
+        <p>Thank you for your purchase.</p>
+        <p>Order ID: <span id="order-id"></span></p>
+        <p style="margin-top:0.5rem; color:var(--muted);">A confirmation has been sent to your email.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+  /* ── Toast ──────────────────────────────────────────────────────────────── */
+  function toast(msg, type = '') {
+    const el = document.createElement('div');
+    el.className = 'toast ' + type;
+    el.textContent = msg;
+    document.getElementById('toast-container').appendChild(el);
+    setTimeout(() => el.remove(), 3500);
+  }
+
+  /* ── Cart state ─────────────────────────────────────────────────────────── */
+  const cart = [];
+
+  function updateCartBadge() {
+    document.getElementById('cart-badge').textContent = cart.length;
+  }
+
+  function renderCart() {
+    const list = document.getElementById('cart-items-list');
+    const emptyMsg = document.getElementById('cart-empty-msg');
+    const totalEl = document.getElementById('cart-total-amount');
+
+    // Remove old item rows (keep empty-msg node)
+    list.querySelectorAll('.cart-item').forEach(n => n.remove());
+
+    if (cart.length === 0) {
+      emptyMsg.style.display = '';
+      totalEl.textContent = '$0.00';
+      return;
+    }
+    emptyMsg.style.display = 'none';
+
+    let total = 0;
+    cart.forEach(item => {
+      total += parseFloat(item.price);
+      const row = document.createElement('div');
+      row.className = 'cart-item';
+      row.innerHTML = `<span>${item.name}</span><span>$${parseFloat(item.price).toFixed(2)}</span>`;
+      list.appendChild(row);
+    });
+    totalEl.textContent = '$' + total.toFixed(2);
+  }
+
+  /* ── Section 1 — Login ──────────────────────────────────────────────────── */
+  document.getElementById('login-btn').addEventListener('click', () => {
+    const u = document.getElementById('username').value.trim();
+    const p = document.getElementById('password').value.trim();
+    if (!u || !p) { toast('Please enter username and password', 'danger'); return; }
+    const status = document.getElementById('login-status');
+    status.textContent = '✓ Signed in as ' + u;
+    status.style.display = 'block';
+    toast('Welcome back, ' + u + '!', 'success');
+  });
+
+  /* ── Section 2 — Profile ────────────────────────────────────────────────── */
+  document.getElementById('save-profile-btn').addEventListener('click', () => {
+    const name = document.getElementById('full-name').value.trim();
+    if (!name) { toast('Please enter your full name', 'danger'); return; }
+    toast('Profile saved — ' + name, 'success');
+  });
+
+  /* ── Section 3 — Products (Add to Cart) ────────────────────────────────── */
+  document.querySelectorAll('.add-to-cart').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const name  = btn.getAttribute('data-name');
+      const price = btn.getAttribute('data-price');
+      cart.push({ name, price });
+      updateCartBadge();
+      renderCart();
+      toast(name + ' added to cart', 'success');
+      btn.textContent = '✓ Added';
+      btn.disabled = true;
+      setTimeout(() => { btn.textContent = 'Add to Cart'; btn.disabled = false; }, 1500);
+    });
+  });
+
+  /* ── Section 4 — Cart ───────────────────────────────────────────────────── */
+  document.getElementById('apply-coupon-btn').addEventListener('click', () => {
+    toast('Coupon applied: 10% off', 'success');
+  });
+
+  document.getElementById('checkout-btn').addEventListener('click', () => {
+    if (cart.length === 0) { toast('Your cart is empty', 'danger'); return; }
+    document.getElementById('section-payment').scrollIntoView({ behavior: 'smooth' });
+    toast('Proceed to enter payment details', '');
+  });
+
+  /* ── Section 5 — Payment ────────────────────────────────────────────────── */
+  document.getElementById('pay-btn').addEventListener('click', () => {
+    const card    = document.getElementById('card-number').value.trim();
+    const expiry  = document.getElementById('card-expiry').value.trim();
+    const cvv     = document.getElementById('card-cvv').value.trim();
+    const country = document.getElementById('billing-country').value;
+    if (!card || !expiry || !cvv || !country) {
+      toast('Please fill in all payment fields', 'danger');
+      return;
+    }
+    const orderId = 'ORD-' + Math.random().toString(36).substr(2, 8).toUpperCase();
+    document.getElementById('payment-form-content').style.display = 'none';
+    const conf = document.getElementById('order-confirmation');
+    document.getElementById('order-id').textContent = orderId;
+    conf.style.display = 'block';
+    toast('Payment successful! ' + orderId, 'success');
+  });
+</script>
+</body>
+</html>

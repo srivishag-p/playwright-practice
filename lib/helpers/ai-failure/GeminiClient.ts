@@ -21,6 +21,7 @@ import type {
   AiAnalysis,
   DomIntelligenceResult,
   FailedAction,
+  InteractionComparison,
   RootCauseCandidate,
   SelectorDiff,
   SupportingEvidence,
@@ -35,6 +36,8 @@ interface GeminiInput {
   similarityCandidates: import('./types').SimilarityCandidate[];
   rankedRootCauses: RootCauseCandidate[];
   selectorDiff?: SelectorDiff;
+  /** Old-vs-new comparison: last successful element state vs current DOM. */
+  interactionComparison?: InteractionComparison;
 }
 
 export class GeminiClient {
@@ -121,6 +124,22 @@ export class GeminiClient {
       error: input.dom.error,
     };
 
+    // Strip the (large) base64 screenshots from the comparison before sending —
+    // the AI reasons over the structured diff; humans get the images in the report.
+    const ic = input.interactionComparison;
+    const comparisonForAi = ic
+      ? {
+          retrievalLevel: ic.retrievalLevel,
+          baselineDate: ic.baselineDate,
+          previous: ic.previous,
+          current: ic.current,
+          suggestedLocator: ic.suggestedLocator,
+          detectedChanges: ic.detectedChanges,
+          note: ic.note,
+          elementGone: ic.elementGone,
+        }
+      : undefined;
+
     const slim = {
       scenario: input.scenarioName,
       failedAction: input.failedAction,
@@ -129,6 +148,8 @@ export class GeminiClient {
       // Pre-computed diff: what the selector expected vs what the DOM has.
       // differenceHints describes the specific gap (typo, rename, moved, missing attr).
       selectorDiff: input.selectorDiff,
+      // Old info vs new info: last successful element state vs current best candidate.
+      interactionComparison: comparisonForAi,
       consoleLogs: input.evidence.consoleLogs,
       networkFailures: input.evidence.networkFailures,
       playwrightCallLog: input.evidence.playwrightCallLog,
@@ -180,6 +201,39 @@ export class GeminiClient {
       'Use selectorDiff.differenceHints as the primary evidence for your rootCause and explanation.',
       'Example: if differenceHints says "id has 1-character typo: \'NewAcount\' → \'NewAccount\'", your rootCause should state the typo explicitly.',
       '',
+      '## interactionComparison — what changed since this locator last worked',
+      input.interactionComparison?.elementGone
+        ? [
+            '⚠️  ELEMENT REMOVED — DB-FIRST PRIORITY RULE:',
+            'interactionComparison.elementGone = true means the database has a confirmed baseline for this',
+            'exact locator (captured ' + (input.interactionComparison.baselineDate ?? 'previously') + ') but the element does NOT exist',
+            'anywhere in the current DOM. A section of the UI was removed or the element was deleted.',
+            '',
+            'You MUST follow these rules:',
+            '  1. Set betterLocator to "" — do NOT suggest any replacement locator. There is nothing to replace.',
+            '  2. Set candidateAssessments to [] — no candidates are relevant.',
+            '  3. Set changeAnalysis.whatChanged to describe the element that was removed (use interactionComparison.previous to name it).',
+            '  4. Set changeAnalysis.whyCausedFailure to state the element / section no longer exists in the DOM.',
+            '  5. Set changeAnalysis.fix to "" — the fix is an APPLICATION change (restore the removed element), not an automation change.',
+            '  6. Set rootCause to clearly state the element was removed from the UI.',
+            '  7. Set issueClassification to "Application Bug".',
+          ].join('\n')
+        : input.interactionComparison
+          ? [
+              'interactionComparison is the OLD-vs-NEW evidence: the element state the LAST time this locator',
+              'successfully acted (interactionComparison.previous, captured ' + (input.interactionComparison.baselineDate ?? 'previously') + ')',
+              'vs the current best DOM candidate (interactionComparison.current).',
+              'interactionComparison.detectedChanges lists every measured difference (field, from, to, severity).',
+              'retrievalLevel indicates how closely the baseline matches (1 = exact; >2 = partial — say so).',
+              'Produce a changeAnalysis object:',
+              '  - whatChanged:      the specific field(s) that changed — quote detectedChanges from/to values',
+              '  - whyCausedFailure: why that change made THIS locator (failedAction.selector) stop matching',
+              '  - fix:              the exact updated locator — MUST equal betterLocator',
+              'When detectedChanges is empty but a baseline exists, the element likely moved or was removed —',
+              'state that rather than inventing a field change.',
+            ].join('\n')
+          : 'No prior successful snapshot was available for this locator. Set changeAnalysis to null and do not speculate about what changed.',
+      '',
       '## appFixes — only when network/console evidence is present',
       isSelectorFailure && !hasNetworkFailures
         ? 'The top rule-engine candidate is a selector/locator failure with no network failures. appFixes MUST be []. Do NOT suggest server config, MIME types, 404 fixes, or deployment steps.'
@@ -206,7 +260,8 @@ export class GeminiClient {
       '  "automationImprovements": string[], // each item cites a specific DOM attribute from the package',
       '  "stabilityRecommendations": string[],',
       '  "debuggingChecklist": string[],',
-      '  "scoreExplanations": { [rootCauseTitle: string]: string }',
+      '  "scoreExplanations": { [rootCauseTitle: string]: string },',
+      '  "changeAnalysis": { "whatChanged": string, "whyCausedFailure": string, "fix": string } | null',
       '}',
       '',
       'Failure package:',
@@ -294,6 +349,13 @@ export class GeminiClient {
         isFlaky: typeof obj.isFlaky === 'boolean' ? obj.isFlaky : undefined,
         debuggingChecklist: GeminiClient.toArray(obj.debuggingChecklist),
         scoreExplanations: typeof obj.scoreExplanations === 'object' ? obj.scoreExplanations : undefined,
+        changeAnalysis: obj.changeAnalysis && typeof obj.changeAnalysis === 'object'
+          ? {
+              whatChanged: typeof obj.changeAnalysis.whatChanged === 'string' ? obj.changeAnalysis.whatChanged : undefined,
+              whyCausedFailure: typeof obj.changeAnalysis.whyCausedFailure === 'string' ? obj.changeAnalysis.whyCausedFailure : undefined,
+              fix: typeof obj.changeAnalysis.fix === 'string' ? obj.changeAnalysis.fix : undefined,
+            }
+          : undefined,
       };
     } catch {
       // Model didn't return clean JSON — keep the prose so nothing is lost.

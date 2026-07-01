@@ -25,4 +25,14 @@ export { SelfHealer } from './SelfHealer';
 export type { HealResult } from './SelfHealer';
 export { AutoPatch } from './AutoPatch';
 export { locatorFromString } from './locatorFromString';
+
+// ── Interaction Snapshot & UI Change Analysis ────────────────────────────────
+export { AiDbClient } from './db/AiDbClient';
+export { InteractionSnapshotCapture } from './InteractionSnapshotCapture';
+export type { CaptureContext } from './InteractionSnapshotCapture';
+export { InteractionSnapshotRepo } from './InteractionSnapshotRepo';
+export type { SnapshotKey, RetrievedSnapshot } from './InteractionSnapshotRepo';
+export { InteractionDiff } from './InteractionDiff';
+export { levenshtein, stringSimilarity, urlKey } from './utils';
+
 export * from './types';

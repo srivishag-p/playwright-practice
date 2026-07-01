@@ -44,7 +44,12 @@ export class DomIntelligence {
         DomIntelligenceResult,
         'resolved' | 'matchCount' | 'error'
       >;
-      return { resolved: matchCount === 1, matchCount, ...data };
+      // Authoritative role + accessible-name tree (browser-computed). Best effort.
+      let a11yTree: string | undefined;
+      try {
+        a11yTree = (await page.locator('body').ariaSnapshot()).slice(0, 8000);
+      } catch { /* ariaSnapshot unavailable — DOM tiers still produced */ }
+      return { resolved: matchCount === 1, matchCount, ...data, a11yTree };
     } catch (err) {
       return { resolved: false, matchCount, error: `DOM snapshot failed: ${(err as Error).message}` };
     } finally {

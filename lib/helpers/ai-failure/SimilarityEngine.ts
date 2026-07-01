@@ -32,6 +32,8 @@ interface ParsedTarget {
   ariaLabel?: string;
   name?: string;
   type?: string;
+  /** The `value` attribute — for input[value="…"], radios, checkboxes, options. */
+  value?: string;
 }
 
 export class SimilarityEngine {
@@ -60,15 +62,162 @@ export class SimilarityEngine {
       return [];
     }
 
+    // ── 1. Accessibility-tree candidates ─────────────────────────────────────
+    // For role/name targets (getByRole, getByLabel) the browser already computed
+    // the authoritative accessible name. Read it instead of reconstructing it —
+    // this is what fixes "only the name is wrong → suggests the wrong element".
+    let a11yCandidates: SimilarityCandidate[] = [];
+    if (target.role || target.accessibleName || target.ariaLabel) {
+      a11yCandidates = await SimilarityEngine.findA11yCandidates(page, target, maxResults);
+      logger.debug(`[SimilarityEngine] ${a11yCandidates.length} a11y-tree candidate(s)`);
+    }
+
+    // ── 2. Attribute-scraping candidates (fallback for unnamed/roleless nodes) ─
+    let attrCandidates: SimilarityCandidate[] = [];
     try {
-      const result = await page.evaluate(SimilarityEngine.searchFn, { target, maxResults });
-      const candidates = result as SimilarityCandidate[];
-      logger.debug(`[SimilarityEngine] found ${candidates.length} candidate(s)`);
-      return candidates;
+      attrCandidates = (await page.evaluate(SimilarityEngine.searchFn, { target, maxResults })) as SimilarityCandidate[];
     } catch (err) {
       logger.warn(`[SimilarityEngine] page.evaluate failed: ${(err as Error).message}`);
+    }
+
+    // ── 3. Merge: dedup by locator, rank by score (a11y names win on ties) ────
+    const seen = new Set<string>();
+    const merged = [...a11yCandidates, ...attrCandidates]
+      .filter((c) => {
+        if (seen.has(c.suggestedLocator)) return false;
+        seen.add(c.suggestedLocator);
+        return true;
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults);
+
+    logger.debug(`[SimilarityEngine] found ${merged.length} candidate(s) after merge`);
+    return merged;
+  }
+
+  // ── Accessibility-tree candidate finder (Node side) ──────────────────────────
+
+  /** Roles that aren't useful targets for getByRole — skip them in the tree. */
+  private static readonly SKIP_ROLES = new Set([
+    'generic', 'none', 'presentation', 'text', 'paragraph', 'linebreak',
+    'inlinetextbox', 'rootwebarea', 'document', 'group',
+  ]);
+
+  /**
+   * Build candidates from the browser-computed accessibility tree (via Playwright's
+   * ariaSnapshot, a YAML rendering of role + accessible name). Each node already
+   * carries its resolved name, so a role/name target matches the right element
+   * directly and yields a guaranteed-resolvable page.getByRole(role, { name }).
+   *
+   * Example ariaSnapshot lines:
+   *   - textbox "First Name"
+   *   - button "Submit"
+   *   - heading "Sign up" [level=1]
+   */
+  private static async findA11yCandidates(
+    page: Page,
+    target: ParsedTarget,
+    maxResults: number
+  ): Promise<SimilarityCandidate[]> {
+    let yaml = '';
+    try {
+      yaml = await page.locator('body').ariaSnapshot();
+    } catch (err) {
+      logger.warn(`[SimilarityEngine] ariaSnapshot failed: ${(err as Error).message}`);
       return [];
     }
+    if (!yaml) return [];
+
+    // Parse "- <role> "<name>"" lines from the YAML tree.
+    const nodes: { role: string; name: string }[] = [];
+    const lineRe = /^\s*-\s+([a-zA-Z][a-zA-Z0-9-]*)(?:\s+"((?:[^"\\]|\\.)*)")?/;
+    for (const line of yaml.split(/\r?\n/)) {
+      const m = line.match(lineRe);
+      if (!m) continue;
+      nodes.push({ role: m[1], name: m[2] ? m[2].replace(/\\"/g, '"') : '' });
+    }
+
+    const wantRole = (target.role || '').toLowerCase();
+    const wantName = (target.accessibleName || target.ariaLabel || '').trim();
+    const esc = (v: string) => v.slice(0, 60).replace(/'/g, "\\'");
+
+    const scored = nodes
+      .map((node) => {
+        const role = node.role.toLowerCase();
+        if (SimilarityEngine.SKIP_ROLES.has(role)) return null;
+
+        const roleMatches = wantRole ? role === wantRole : false;
+        const nameFs = wantName && node.name ? SimilarityEngine.fuzzy(node.name, wantName) : 0;
+        const reasons: string[] = [];
+        let score = 0;
+
+        if (wantName) {
+          if (nameFs <= 0) return null; // name target with no name match — not this node
+          // Authoritative name match; a role match adds confidence, a mismatch trims it.
+          const factor = wantRole ? (roleMatches ? 1 : 0.7) : 1;
+          score = Math.round(nameFs * factor * 99);
+          reasons.push(`a11y name "${node.name}" (${Math.round(nameFs * 100)}% match)`);
+          if (wantRole) reasons.push(roleMatches ? `role="${role}"` : `role "${role}" ≠ "${wantRole}"`);
+        } else if (wantRole) {
+          if (!roleMatches) return null; // role-only target, role must match
+          score = 40;
+          reasons.push(`a11y role="${role}" (no name specified)`);
+        } else {
+          return null;
+        }
+
+        const suggestedLocator = node.name
+          ? `page.getByRole('${role}', { name: '${esc(node.name)}' })`
+          : `page.getByRole('${role}')`;
+
+        const tag =
+          role === 'button' ? 'button' :
+          role === 'link' ? 'a' :
+          role === 'textbox' || role === 'searchbox' ? 'input' :
+          role === 'combobox' || role === 'listbox' ? 'select' : '';
+
+        return {
+          score: Math.min(99, score),
+          tag,
+          text: node.name || undefined,
+          role,
+          suggestedLocator,
+          matchReasons: reasons,
+        } as SimilarityCandidate;
+      })
+      .filter((c): c is SimilarityCandidate => c !== null);
+
+    scored.sort((a, b) => b.score - a.score);
+
+    // Dedup by locator (same role+name collapses to one).
+    const seen = new Set<string>();
+    return scored.filter((c) => {
+      if (seen.has(c.suggestedLocator)) return false;
+      seen.add(c.suggestedLocator);
+      return true;
+    }).slice(0, maxResults);
+  }
+
+  /** Node-side fuzzy string similarity 0–1 (mirrors the browser-side fuzzyScore). */
+  private static fuzzy(a: string, b: string): number {
+    if (!a || !b) return 0;
+    const al = a.toLowerCase().trim();
+    const bl = b.toLowerCase().trim();
+    if (al === bl) return 1.0;
+    if (al.includes(bl) || bl.includes(al)) return 0.85;
+    const maxLen = Math.max(al.length, bl.length);
+    if (Math.abs(al.length - bl.length) > maxLen * 0.5) return 0;
+    const prev: number[] = [];
+    const curr: number[] = [];
+    for (let i = 0; i <= bl.length; i++) prev[i] = i;
+    for (let i = 1; i <= al.length; i++) {
+      curr[0] = i;
+      for (let j = 1; j <= bl.length; j++) {
+        curr[j] = al[i - 1] === bl[j - 1] ? prev[j - 1] : 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
+      }
+      for (let k = 0; k <= bl.length; k++) prev[k] = curr[k];
+    }
+    return Math.max(0, 1 - prev[bl.length] / maxLen);
   }
 
   // ── Node-side selector parser ──────────────────────────────────────────────
@@ -141,7 +290,7 @@ export class SimilarityEngine {
       else if (attr === 'data-testid') target.dataTestId = v;
       else if (attr === 'name') target.name = v;
       else if (attr === 'title') target.text = v;
-      else if (attr === 'value') target.text = v;
+      else if (attr === 'value') target.value = v;
       return target;
     }
 
@@ -182,7 +331,7 @@ export class SimilarityEngine {
       else if (attr === 'placeholder') target.placeholder = v;
       else if (attr === 'name') target.name = v;
       else if (attr === 'type') target.type = v;
-      else if (attr === 'value') target.text = v;
+      else if (attr === 'value') target.value = v;
     }
 
     const hintTextM = css.match(/(?::text\(|:has-text\()['"`]([^'"`]+)['"`]\)/i);
@@ -308,6 +457,7 @@ export class SimilarityEngine {
       (target.placeholder     ? 25 : 0) +
       (target.name            ? 35 : 0) +   // raised from 15 — primary form field key
       (target.type            ? 15 : 0) +
+      (target.value           ? 30 : 0) +   // value="…" is a strong, specific signal
       ((target.classes && target.classes.length) ? 10 : 0);
 
     if (achievableMax === 0) return [];
@@ -441,6 +591,20 @@ export class SimilarityEngine {
           reasons.push(`type="${typeAttr}"`);
         }
 
+        // ── value (30) — fuzzy against the value ATTRIBUTE (not visible text).
+        // For input[value="…"], radios, checkboxes and options the value is the
+        // identifying signal; matching it against textContent finds wrong elements.
+        const valueAttr = el.getAttribute('value');
+        if (target.value && valueAttr) {
+          const fs = fuzzyScore(valueAttr, target.value);
+          if (fs > 0) {
+            score += fs * 30;
+            reasons.push(fs === 1
+              ? `value="${valueAttr}" exact`
+              : `value "${valueAttr}" (${Math.round(fs * 100)}% match)`);
+          }
+        }
+
         // ── name attribute (35) — fuzzy; raised weight for form identifiers ───
         const nameAttr = el.getAttribute('name');
         if (target.name && nameAttr) {
@@ -484,6 +648,7 @@ export class SimilarityEngine {
         const actAria    = act.getAttribute('aria-label');
         const actPlace   = act.getAttribute('placeholder');
         const actName    = act.getAttribute('name');
+        const actValue   = act.getAttribute('value');
         const actText    = (act.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 100);
         const actImplicitRole =
           actTag === 'button' ? 'button' :
@@ -497,9 +662,17 @@ export class SimilarityEngine {
         const isTextual = actTag === 'a' || actTag === 'button' ||
           actRole === 'link' || actRole === 'button';
 
+        // An id is only worth suggesting if it looks authored, not generated.
+        // Trailing digits (optionalBundles0), or ":" / "|" framework ids are
+        // positional/dynamic — preferring them over a semantic value/name is how
+        // we ended up suggesting a brittle #foo0 instead of fixing a value typo.
+        const idUsable = !!actId && !actId.includes('|') && !actId.includes(':');
+        const idStable = idUsable && !/\d$/.test(actId) && !/^(ember|ui-id|radix|mui|:r)/i.test(actId);
+        const esc2 = (v: string) => v.replace(/"/g, '\\"');
+
         // Priority (Playwright-recommended, resilient first):
-        //   testid > role+aria-label > role+text > role+placeholder >
-        //   aria-label > placeholder > text > safe id > name attr > css fallback
+        //   testid > role+aria > role+text > role+placeholder > aria > placeholder
+        //   > text > value-intent > stable id > name attr > value > unstable id > css
         let suggestedLocator: string;
         if (actTestId) {
           suggestedLocator = `page.getByTestId('${actTestId}')`;
@@ -515,13 +688,22 @@ export class SimilarityEngine {
           suggestedLocator = `page.getByPlaceholder('${esc(actPlace)}')`;
         } else if (isTextual && actText.length > 1) {
           suggestedLocator = `page.getByText('${esc(actText)}')`;
-        } else if (actId && !actId.includes('|') && !actId.includes(':')) {
+        } else if (target.value && actValue) {
+          // The test already used a value selector — honour that intent (fixes the
+          // typo) instead of swapping to a positional id.
+          suggestedLocator = `page.locator('${actTag}[value="${esc2(actValue)}"]')`;
+        } else if (idStable) {
           suggestedLocator = `page.locator('#${actId}')`;
         } else if (actName && (actTag === 'input' || actTag === 'select' || actTag === 'textarea')) {
           suggestedLocator = `page.locator('${actTag}[name="${actName}"]')`;
+        } else if (actValue) {
+          suggestedLocator = `page.locator('${actTag}[value="${esc2(actValue)}"]')`;
+        } else if (idUsable) {
+          // Last-resort: a generated id beats a bare tag, but flag it as fragile.
+          suggestedLocator = `page.locator('#${actId}')`;
         } else {
           const clsStr = actClasses.slice(0, 2).map((c) => '.' + c).join('');
-          suggestedLocator = `page.locator('${actTag}${actId && !actId.includes('|') && !actId.includes(':') ? '#' + actId : ''}${clsStr}')`;
+          suggestedLocator = `page.locator('${actTag}${idUsable ? '#' + actId : ''}${clsStr}')`;
         }
 
         // Note when the suggestion was redirected to a different element so the
